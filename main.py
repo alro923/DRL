@@ -13,6 +13,7 @@ import datetime
 from os.path import join, exists
 
 import torch
+import json
 
 from tvr.models.tokenization_clip import SimpleTokenizer as ClipTokenizer
 from tvr.dataloaders.data_dataloaders import DATALOADER_DICT
@@ -23,7 +24,7 @@ from tvr.utils.metrics import compute_metrics, tensor_text_to_video_metrics, ten
 from tvr.utils.comm import is_main_process, synchronize
 from tvr.utils.logger import setup_logger
 from tvr.utils.metric_logger import MetricLogger
-
+from collections import OrderedDict
 allgather = AllGather.apply
 
 global logger
@@ -137,7 +138,7 @@ def build_dataloader(args):
     test_dataloader, test_length = None, 0
     val_dataloader, val_length = None, 0
 
-    val_dataloader, val_length, val_video_id_dict, val_sentence_id_dict = DATALOADER_DICT[args.datatype]["val"](args, tokenizer, subset="val")
+    val_dataloader, val_length= DATALOADER_DICT[args.datatype]["val"](args, tokenizer, subset="val")
 
     if args.do_train:
         train_dataloader, train_length, train_sampler = DATALOADER_DICT[args.datatype]["train"](args, tokenizer)
@@ -146,7 +147,7 @@ def build_dataloader(args):
         logger.info("  Batch size = %d", args.batch_size)
         logger.info("  Num steps = %d", len(train_dataloader) * args.epochs)
     else: # do_eval
-        test_dataloader, test_length, test_video_id_dict, test_sentence_id_dict = val_dataloader, val_length, val_video_id_dict, val_sentence_id_dict
+        test_dataloader, test_length = val_dataloader, val_length
         if isinstance(test_length, int):
             logger.info("***** Running test *****")
             logger.info("  Num examples = %d", test_length)
@@ -158,7 +159,7 @@ def build_dataloader(args):
             logger.info("  Batch size = %d", args.batch_size_val)
             logger.info("  Num steps = %d %d", len(test_dataloader[0]), len(test_dataloader[1]))
     
-    return test_dataloader, val_dataloader, train_dataloader, train_sampler, test_video_id_dict, test_sentence_id_dict
+    return test_dataloader, val_dataloader, train_dataloader, train_sampler
 
 
 def prep_optimizer(args, model, num_train_optimization_steps, local_rank):
@@ -424,6 +425,12 @@ def eval_epoch(args, model, test_dataloader, device):
             batch_feat_v = batch_feat_v[:ids_t.max() + 1, ...]
             logger.info('[finish] extract text+video feature')
 
+    torch.save(ids_t, '/home/hjlee/workspace/Github/DRL/output/t2v/ids_t.pt')
+    torch.save(batch_mask_t, '/home/hjlee/workspace/Github/DRL/output/t2v/batch_mask_t.pt')
+    torch.save(batch_mask_v, '/home/hjlee/workspace/Github/DRL/output/t2v/batch_mask_v.pt')
+    torch.save(batch_feat_t, '/home/hjlee/workspace/Github/DRL/output/t2v/batch_feat_t.pt')
+    torch.save(batch_feat_v, '/home/hjlee/workspace/Github/DRL/output/t2v/batch_feat_v.pt')
+
     toc1 = time.time()
 
     logger.info('{} {} {} {}'.format(len(batch_mask_t), len(batch_mask_v), len(batch_feat_t), len(batch_feat_v)))
@@ -483,37 +490,22 @@ def t2v_epoch(args, model, test_dataloader, device):
     # ----------------------------
     batch_mask_t, batch_mask_v, batch_feat_t, batch_feat_v, ids_t, ids_v = [], [], [], [], [], []
 
-    with torch.no_grad():
-        tic = time.time()
-        
-        logger.info('[start] extract text+video feature')
-        for batch in tqdm(test_dataloader):
-            batch = tuple(t.to(device) for t in batch)
-            text_ids, text_mask, video, video_mask, inds = batch
-            text_feat, video_feat = model.get_text_video_feat(text_ids, text_mask, video, video_mask)
-            ids_t.append(inds)
-            batch_mask_t.append(text_mask)
-            batch_mask_v.append(video_mask)
-            batch_feat_t.append(text_feat)
-            batch_feat_v.append(video_feat)
-        ids_t = allgather(torch.cat(ids_t, dim=0), args).squeeze()
-        batch_mask_t = allgather(torch.cat(batch_mask_t, dim=0), args)
-        batch_mask_v = allgather(torch.cat(batch_mask_v, dim=0), args)
-        batch_feat_t = allgather(torch.cat(batch_feat_t, dim=0), args)
-        batch_feat_v = allgather(torch.cat(batch_feat_v, dim=0), args)
-        batch_mask_t[ids_t] = batch_mask_t.clone()
-        batch_mask_v[ids_t] = batch_mask_v.clone()
-        batch_feat_t[ids_t] = batch_feat_t.clone()
-        batch_feat_v[ids_t] = batch_feat_v.clone()
-        batch_mask_t = batch_mask_t[:ids_t.max() + 1, ...]
-        batch_mask_v = batch_mask_v[:ids_t.max() + 1, ...]
-        batch_feat_t = batch_feat_t[:ids_t.max() + 1, ...]
-        batch_feat_v = batch_feat_v[:ids_t.max() + 1, ...]
-        logger.info('[finish] extract text+video feature')
+    batch_mask_t = torch.load('/home/hjlee/workspace/Github/DRL/output/t2v/batch_mask_t.pt')
+    batch_mask_v = torch.load('/home/hjlee/workspace/Github/DRL/output/t2v/batch_mask_v.pt')
+    batch_feat_t = torch.load('/home/hjlee/workspace/Github/DRL/output/t2v/batch_feat_t.pt')
+    batch_feat_v = torch.load('/home/hjlee/workspace/Github/DRL/output/t2v/batch_feat_v.pt')
+    ids_t = torch.load('/home/hjlee/workspace/Github/DRL/output/t2v/ids_t.pt')
 
-    toc1 = time.time()
+    with open('/home/hjlee/workspace/Github/DRL/output/sentence_dict.json', 'r') as f:
+        sentence_dict = json.load(f)
+    f.close()
+
+    with open('/home/hjlee/workspace/Github/DRL/output/video_dict.json', 'r') as f:
+        video_dict = json.load(f)
+    f.close()
 
     logger.info('{} {} {} {}'.format(len(batch_mask_t), len(batch_mask_v), len(batch_feat_t), len(batch_feat_v)))
+
     # ----------------------------------
     # 2. calculate the similarity
     # ----------------------------------
@@ -523,22 +515,47 @@ def t2v_epoch(args, model, test_dataloader, device):
         sim_matrix = np.concatenate(tuple(sim_matrix), axis=0)
     logger.info('[end] calculate the similarity')
     
+    minus_sim_matrix = -sim_matrix
+    
+    ids_t_cpu = ids_t.detach().cpu()
+    np_ids_t = ids_t_cpu.numpy()
+
+    text_id_video_paths_dict = OrderedDict()
+    for i in range(0, 1000):
+        row_of_i = np.where(np_ids_t == i)[0][0]
+        array = minus_sim_matrix[row_of_i]
+        tmp = array.argsort()
+        ranks = np.zeros(1000)
+        ranks[tmp] = np.arange(len(array))
+        # index of zero to 999
+        idx_list = []
+        for j in range(0, 1000) :
+            idx_list.append(np.where(ranks==j)[0][0])
+        video_path_list = []
+        video_id_list = []
+        for idx in idx_list:
+            video_id = sentence_dict[str(ids_t[idx].item())][0]
+            video_id_list.append(video_id)
+            video_path_list.append(video_dict[video_id])
+        dict_of_t_id = {'text': sentence_dict[str(i)][1][0], 'video': video_dict[sentence_dict[str(i)][0]], 'video_path_list' : video_path_list}
+        text_id_video_paths_dict[str(i)] = dict_of_t_id
+    breakpoint()
+    with open('/home/hjlee/workspace/Github/DRL/output/t2v_output.json', 'w') as f:
+        json.dump(text_id_video_paths_dict, f)
+    f.close()
     breakpoint()
 
-    toc2 = time.time()
     logger.info('[start] compute_metrics')
-    
     logger.info("sim matrix size: {}, {}".format(sim_matrix.shape[0], sim_matrix.shape[1]))
     tv_metrics = compute_metrics(sim_matrix)
     
     logger.info('\t Length-T: {}, Length-V:{}'.format(len(sim_matrix), len(sim_matrix[0])))
     logger.info('[end] compute_metrics')
 
-    toc3 = time.time()
-    logger.info("time profile: feat {:.1f}s match {:.5f}s metrics {:.5f}s".format(toc1 - tic, toc2 - toc1, toc3 - toc2))
 
     logger.info("Text-to-Video: R@1: {:.1f} - R@5: {:.1f} - R@10: {:.1f} - Median R: {:.1f} - Mean R: {:.1f}".
                 format(tv_metrics['R1'], tv_metrics['R5'], tv_metrics['R10'], tv_metrics['MR'], tv_metrics['MeanR']))
+
 
     return tv_metrics['R1']
 
@@ -552,17 +569,18 @@ def main():
     args = set_seed_logger(args)
 
     model = build_model(args)
-    breakpoint()
-    test_dataloader, val_dataloader, train_dataloader, train_sampler, test_video_id_dict, test_sentence_id_dict = build_dataloader(args)
+
+    test_dataloader, val_dataloader, train_dataloader, train_sampler = build_dataloader(args)
 
     ## ####################################
     # train and eval
     ## ####################################
-    if args.do_train:
+    if args.do_t2v:
+        t2v_epoch(args, model, test_dataloader, args.device)
+    elif args.do_train:
         tic = time.time()
         max_steps = len(train_dataloader) * args.epochs
         optimizer, scheduler, model = prep_optimizer(args, model, max_steps, args.local_rank)
-
         best_score = 0.00001
         best_output_model_file = "None"
         global_step = 0
@@ -605,8 +623,6 @@ def main():
         synchronize()
     elif args.do_eval:
         eval_epoch(args, model, test_dataloader, args.device)
-    elif args.do_t2v:
-        t2v_epoch(args, model, test_dataloader, args.device)
 
 
 if __name__ == "__main__":

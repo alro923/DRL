@@ -217,6 +217,7 @@ class RetrievalDataset(Dataset):
             text_ids, text_mask, s, e = self._get_text(caption)
             video, video_mask = self._get_rawvideo_dec(video_id, s, e)
             # video, video_mask = self._get_rawvideo(video_id, s, e)
+            #print(idx, video_id, caption)
             return text_ids, text_mask, video, video_mask, idx
         elif self.mode == 'text':
             video_id, caption = self.sentences_dict[idx]
