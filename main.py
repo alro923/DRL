@@ -132,35 +132,11 @@ def build_dataloader(args):
     tokenizer = ClipTokenizer()
     assert args.datatype in DATALOADER_DICT
 
-    assert DATALOADER_DICT[args.datatype]["test"] is not None or DATALOADER_DICT[args.datatype]["val"] is not None
-
+    train_dataloader, train_length, train_sampler = None, None, None
     test_dataloader, test_length = None, 0
-    if DATALOADER_DICT[args.datatype]["test"] is not None:
-        test_dataloader, test_length = DATALOADER_DICT[args.datatype]["test"](args, tokenizer)
+    val_dataloader, val_length = None, 0
 
-    if DATALOADER_DICT[args.datatype]["val"] is not None:
-        val_dataloader, val_length = DATALOADER_DICT[args.datatype]["val"](args, tokenizer, subset="val")
-    else:
-        val_dataloader, val_length = test_dataloader, test_length
-
-    ## report validation results if the ["test"] is None
-    if test_dataloader is None:
-        test_dataloader, test_length = val_dataloader, val_length
-
-    if isinstance(test_length, int):
-        logger.info("***** Running test *****")
-        logger.info("  Num examples = %d", test_length)
-        logger.info("  Batch size = %d", args.batch_size_val)
-        logger.info("  Num steps = %d", len(test_dataloader))
-        logger.info("***** Running val *****")
-        logger.info("  Num examples = %d", val_length)
-    elif len(test_length) == 2:
-        logger.info("***** Running test *****")
-        logger.info("  Num examples = %dt %dv", test_length[0], test_length[1])
-        logger.info("  Batch size = %d", args.batch_size_val)
-        logger.info("  Num steps = %d %d", len(test_dataloader[0]), len(test_dataloader[1]))
-        logger.info("***** Running val *****")
-        logger.info("  Num examples = %dt %dv", val_length[0], val_length[1])
+    val_dataloader, val_length = DATALOADER_DICT[args.datatype]["val"](args, tokenizer, subset="val")
 
     if args.do_train:
         train_dataloader, train_length, train_sampler = DATALOADER_DICT[args.datatype]["train"](args, tokenizer)
@@ -168,9 +144,19 @@ def build_dataloader(args):
         logger.info("  Num examples = %d", train_length)
         logger.info("  Batch size = %d", args.batch_size)
         logger.info("  Num steps = %d", len(train_dataloader) * args.epochs)
-    else:
-        train_dataloader, train_sampler = None, None
-
+    else: # do_eval
+        test_dataloader, test_length = val_dataloader, val_length
+        if isinstance(test_length, int):
+            logger.info("***** Running test *****")
+            logger.info("  Num examples = %d", test_length)
+            logger.info("  Batch size = %d", args.batch_size_val)
+            logger.info("  Num steps = %d", len(test_dataloader))
+        elif len(test_length) == 2:
+            logger.info("***** Running test *****")
+            logger.info("  Num examples = %dt %dv", test_length[0], test_length[1])
+            logger.info("  Batch size = %d", args.batch_size_val)
+            logger.info("  Num steps = %d %d", len(test_dataloader[0]), len(test_dataloader[1]))
+        
     return test_dataloader, val_dataloader, train_dataloader, train_sampler
 
 
@@ -352,6 +338,7 @@ def eval_epoch(args, model, test_dataloader, device):
     # sentence_num: used to cut the sentence representation
     # video_num: used to cut the video representation
     # #################################################################
+    
     multi_sentence_ = False
     cut_off_points_, sentence_num_, video_num_ = [], -1, -1
     if isinstance(test_dataloader, list) and hasattr(test_dataloader[0].dataset, 'multi_sentence_per_video') \
