@@ -404,11 +404,11 @@ class DRL(nn.Module):
 
         if self.config.interaction == 'wti':
             text_weight = self.text_weight_fc(text_feat).squeeze(2)  # B x N_t x D -> B x N_t
-            text_weight.masked_fill_(torch.tensor((1 - text_mask), dtype=torch.bool), float("-inf"))
+            text_weight.masked_fill_(((1 - text_mask).clone().detach()).bool(), float("-inf"))
             text_weight = torch.softmax(text_weight, dim=-1)  # B x N_t
 
             video_weight = self.video_weight_fc(video_feat).squeeze(2) # B x N_v x D -> B x N_v
-            video_weight.masked_fill_(torch.tensor((1 - video_mask), dtype=torch.bool), float("-inf"))
+            video_weight.masked_fill_(((1 - video_mask).clone().detach()).bool(), float("-inf"))
             video_weight = torch.softmax(video_weight, dim=-1)  # B x N_v
 
         text_feat = text_feat / text_feat.norm(dim=-1, keepdim=True)
