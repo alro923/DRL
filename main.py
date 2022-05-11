@@ -33,6 +33,7 @@ def get_args(description='Disentangled Representation Learning for Text-Video Re
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--do_train", type=int, default=0, help="Whether to run training.")
     parser.add_argument("--do_eval", type=int, default=0, help="Whether to run evaluation.")
+    parser.add_argument("--do_t2v", type=int, default=1, help="Whether to run text to video retrieval demo.")
 
     parser.add_argument("--datatype", default="msrvtt", type=str, help="Point the dataset to finetune.")
     parser.add_argument('--anno_path', type=str, default='data/MSR-VTT/anns', help='annotation path')
@@ -136,7 +137,7 @@ def build_dataloader(args):
     test_dataloader, test_length = None, 0
     val_dataloader, val_length = None, 0
 
-    val_dataloader, val_length = DATALOADER_DICT[args.datatype]["val"](args, tokenizer, subset="val")
+    val_dataloader, val_length, val_video_id_dict, val_sentence_id_dict = DATALOADER_DICT[args.datatype]["val"](args, tokenizer, subset="val")
 
     if args.do_train:
         train_dataloader, train_length, train_sampler = DATALOADER_DICT[args.datatype]["train"](args, tokenizer)
@@ -145,7 +146,7 @@ def build_dataloader(args):
         logger.info("  Batch size = %d", args.batch_size)
         logger.info("  Num steps = %d", len(train_dataloader) * args.epochs)
     else: # do_eval
-        test_dataloader, test_length = val_dataloader, val_length
+        test_dataloader, test_length, test_video_id_dict, test_sentence_id_dict = val_dataloader, val_length, val_video_id_dict, val_sentence_id_dict
         if isinstance(test_length, int):
             logger.info("***** Running test *****")
             logger.info("  Num examples = %d", test_length)
@@ -156,8 +157,8 @@ def build_dataloader(args):
             logger.info("  Num examples = %dt %dv", test_length[0], test_length[1])
             logger.info("  Batch size = %d", args.batch_size_val)
             logger.info("  Num steps = %d %d", len(test_dataloader[0]), len(test_dataloader[1]))
-        
-    return test_dataloader, val_dataloader, train_dataloader, train_sampler
+    
+    return test_dataloader, val_dataloader, train_dataloader, train_sampler, test_video_id_dict, test_sentence_id_dict
 
 
 def prep_optimizer(args, model, num_train_optimization_steps, local_rank):
@@ -468,6 +469,78 @@ def eval_epoch(args, model, test_dataloader, device):
 
     return tv_metrics['R1']
 
+def t2v_epoch(args, model, test_dataloader, device):
+    # this function do not consider multi sentence
+
+    if hasattr(model, 'module'):
+        model = model.module.to(device)
+    else:
+        model = model.to(device)
+    
+    model.eval()
+    # ----------------------------
+    # 1. cache the features
+    # ----------------------------
+    batch_mask_t, batch_mask_v, batch_feat_t, batch_feat_v, ids_t, ids_v = [], [], [], [], [], []
+
+    with torch.no_grad():
+        tic = time.time()
+        
+        logger.info('[start] extract text+video feature')
+        for batch in tqdm(test_dataloader):
+            batch = tuple(t.to(device) for t in batch)
+            text_ids, text_mask, video, video_mask, inds = batch
+            text_feat, video_feat = model.get_text_video_feat(text_ids, text_mask, video, video_mask)
+            ids_t.append(inds)
+            batch_mask_t.append(text_mask)
+            batch_mask_v.append(video_mask)
+            batch_feat_t.append(text_feat)
+            batch_feat_v.append(video_feat)
+        ids_t = allgather(torch.cat(ids_t, dim=0), args).squeeze()
+        batch_mask_t = allgather(torch.cat(batch_mask_t, dim=0), args)
+        batch_mask_v = allgather(torch.cat(batch_mask_v, dim=0), args)
+        batch_feat_t = allgather(torch.cat(batch_feat_t, dim=0), args)
+        batch_feat_v = allgather(torch.cat(batch_feat_v, dim=0), args)
+        batch_mask_t[ids_t] = batch_mask_t.clone()
+        batch_mask_v[ids_t] = batch_mask_v.clone()
+        batch_feat_t[ids_t] = batch_feat_t.clone()
+        batch_feat_v[ids_t] = batch_feat_v.clone()
+        batch_mask_t = batch_mask_t[:ids_t.max() + 1, ...]
+        batch_mask_v = batch_mask_v[:ids_t.max() + 1, ...]
+        batch_feat_t = batch_feat_t[:ids_t.max() + 1, ...]
+        batch_feat_v = batch_feat_v[:ids_t.max() + 1, ...]
+        logger.info('[finish] extract text+video feature')
+
+    toc1 = time.time()
+
+    logger.info('{} {} {} {}'.format(len(batch_mask_t), len(batch_mask_v), len(batch_feat_t), len(batch_feat_v)))
+    # ----------------------------------
+    # 2. calculate the similarity
+    # ----------------------------------
+    logger.info('[start] calculate the similarity')
+    with torch.no_grad():
+        sim_matrix = _run_on_single_gpu(model, batch_mask_t, batch_mask_v, batch_feat_t, batch_feat_v)
+        sim_matrix = np.concatenate(tuple(sim_matrix), axis=0)
+    logger.info('[end] calculate the similarity')
+    
+    breakpoint()
+
+    toc2 = time.time()
+    logger.info('[start] compute_metrics')
+    
+    logger.info("sim matrix size: {}, {}".format(sim_matrix.shape[0], sim_matrix.shape[1]))
+    tv_metrics = compute_metrics(sim_matrix)
+    
+    logger.info('\t Length-T: {}, Length-V:{}'.format(len(sim_matrix), len(sim_matrix[0])))
+    logger.info('[end] compute_metrics')
+
+    toc3 = time.time()
+    logger.info("time profile: feat {:.1f}s match {:.5f}s metrics {:.5f}s".format(toc1 - tic, toc2 - toc1, toc3 - toc2))
+
+    logger.info("Text-to-Video: R@1: {:.1f} - R@5: {:.1f} - R@10: {:.1f} - Median R: {:.1f} - Mean R: {:.1f}".
+                format(tv_metrics['R1'], tv_metrics['R5'], tv_metrics['R10'], tv_metrics['MR'], tv_metrics['MeanR']))
+
+    return tv_metrics['R1']
 
 def main():
     global logger
@@ -479,8 +552,8 @@ def main():
     args = set_seed_logger(args)
 
     model = build_model(args)
-
-    test_dataloader, val_dataloader, train_dataloader, train_sampler = build_dataloader(args)
+    breakpoint()
+    test_dataloader, val_dataloader, train_dataloader, train_sampler, test_video_id_dict, test_sentence_id_dict = build_dataloader(args)
 
     ## ####################################
     # train and eval
@@ -530,9 +603,10 @@ def main():
         torch.cuda.empty_cache()
         eval_epoch(args, model, test_dataloader, args.device)
         synchronize()
-
     elif args.do_eval:
         eval_epoch(args, model, test_dataloader, args.device)
+    elif args.do_t2v:
+        t2v_epoch(args, model, test_dataloader, args.device)
 
 
 if __name__ == "__main__":

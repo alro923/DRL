@@ -27,7 +27,6 @@ def dataloader_msrvtt_train(args, tokenizer):
         sampler=train_sampler,
         drop_last=True,
     )
-    print('>>> dataloader_msrvtt_train len:', len(msrvtt_dataset))
     return dataloader, len(msrvtt_dataset), train_sampler
 
 
@@ -55,7 +54,6 @@ def dataloader_msrvtt_test(args, tokenizer, subset="test"):
         sampler=test_sampler,
         drop_last=False,
     )
-    print('>>> dataloader_msrvtt_test len:', len(msrvtt_testset))
     return dataloader_msrvtt, len(msrvtt_testset)
 
 

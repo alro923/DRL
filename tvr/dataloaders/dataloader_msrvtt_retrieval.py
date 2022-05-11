@@ -52,4 +52,11 @@ class MSRVTTDataset(RetrievalDataset):
         unique_sentence = set([v[1][0] for v in sentences_dict.values()])
         print('[{}] Unique sentence is {} , all num is {}'.format(subset, len(unique_sentence), len(sentences_dict)))
 
+        with open(join(self.anno_path, 'video_dict.json'), 'w') as f:
+            json.dump(video_dict, f)
+        f.close()
+        with open(join(self.anno_path, 'sentence_dict.json'), 'w') as f:
+            json.dump(sentences_dict, f)
+        f.close()
+
         return video_dict, sentences_dict
