@@ -43,12 +43,11 @@ wget https://openaipublic.azureedge.net/clip/models/40d365715913c9da98579312b702
 # wget https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt
 ```
 
-#### Download Datasets
+#### Link Datasets
 
 ```shell
 cd data/MSR-VTT
-wget https://www.robots.ox.ac.uk/~maxbain/frozen-in-time/data/MSRVTT.zip ; unzip MSRVTT.zip
-mv MSRVTT/videos/all ./videos ; mv MSRVTT/annotation/MSR_VTT.json ./anns/MSRVTT_data.json
+ln -s /data5/datasets/MSRVTT/videos/all videos
 ```
 
 ### Fine-tuning code
