@@ -14,6 +14,7 @@ from os.path import join, exists
 
 import torch
 import json
+import sys
 
 from tvr.models.tokenization_clip import SimpleTokenizer as ClipTokenizer
 from tvr.dataloaders.data_dataloaders import DATALOADER_DICT
@@ -223,6 +224,39 @@ def reduce_loss(loss, args):
             loss /= world_size
     return loss
 
+def preprocess_text(text_input, max_words=32):
+    tokenizer = ClipTokenizer()
+    words = tokenizer.tokenize(text_input)
+    SPECIAL_TOKEN = {"CLS_TOKEN": "<|startoftext|>", "SEP_TOKEN": "<|endoftext|>",
+                     "MASK_TOKEN": "[MASK]", "UNK_TOKEN": "[UNK]", "PAD_TOKEN": "[PAD]"}
+    words = [SPECIAL_TOKEN["CLS_TOKEN"]] + words
+    total_length_with_CLS = max_words - 1
+    if len(words) > total_length_with_CLS:
+        words = words[:total_length_with_CLS]
+    words = words + [SPECIAL_TOKEN["SEP_TOKEN"]]
+    input_ids = tokenizer.convert_tokens_to_ids(words)
+    t_tokens = [tokenizer.decode([_t_id]) for _t_id in input_ids]
+    t_tokens = [t.replace('<|startoftext|>', '[CLS]').replace('<|endoftext|>', '[SEP]').strip() for t in t_tokens]
+
+    return t_tokens, torch.tensor(input_ids)
+
+def return_text_mask_feat(model, args, text_input):
+    max_words= args.max_words
+    _, text = preprocess_text(text_input, max_words)
+    text_mask = (text > -1).type(torch.long)
+
+    use_padding = False
+    if use_padding:
+        text_pad = torch.tensor(np.zeros(max_words - len(text))).type(torch.long)
+        text_mask = torch.cat([text_mask, text_pad])
+        text = torch.cat([text, text_pad])
+        assert len(text_mask) == max_words
+        assert len(text) == max_words
+
+    text = text.to(args.device)
+    text_mask = text_mask.to(args.device)
+    text_feat = model.get_text_feat(text, text_mask)
+    return text_mask, text_feat
 
 def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, scheduler, global_step, max_steps):
     global logger
@@ -476,7 +510,7 @@ def eval_epoch(args, model, test_dataloader, device):
 
     return tv_metrics['R1']
 
-def t2v_epoch(args, model, test_dataloader, device):
+def t2v_epoch(args, model, test_dataloader, device, top_k, n_test_loop):
     # this function do not consider multi sentence
 
     if hasattr(model, 'module'):
@@ -490,21 +524,22 @@ def t2v_epoch(args, model, test_dataloader, device):
     # ----------------------------
     batch_mask_t, batch_mask_v, batch_feat_t, batch_feat_v, ids_t, ids_v = [], [], [], [], [], []
 
-    batch_mask_t = torch.load('/home/hjlee/workspace/Github/DRL/output/t2v/batch_mask_t.pt')
-    batch_mask_v = torch.load('/home/hjlee/workspace/Github/DRL/output/t2v/batch_mask_v.pt')
-    batch_feat_t = torch.load('/home/hjlee/workspace/Github/DRL/output/t2v/batch_feat_t.pt')
-    batch_feat_v = torch.load('/home/hjlee/workspace/Github/DRL/output/t2v/batch_feat_v.pt')
-    ids_t = torch.load('/home/hjlee/workspace/Github/DRL/output/t2v/ids_t.pt')
+    # if model or testdataloader change, torch.load part should be changed too.
+    batch_mask_t = torch.load('output/t2v/batch_mask_t.pt')
+    batch_mask_v = torch.load('output/t2v/batch_mask_v.pt')
+    batch_feat_t = torch.load('output/t2v/batch_feat_t.pt')
+    batch_feat_v = torch.load('output/t2v/batch_feat_v.pt')
+    ids_t = torch.load('output/t2v/ids_t.pt')
 
-    with open('/home/hjlee/workspace/Github/DRL/output/sentence_dict.json', 'r') as f:
+    with open('output/sentence_dict.json', 'r') as f:
         sentence_dict = json.load(f)
     f.close()
 
-    with open('/home/hjlee/workspace/Github/DRL/output/video_dict.json', 'r') as f:
+    with open('output/video_dict.json', 'r') as f:
         video_dict = json.load(f)
     f.close()
 
-    logger.info('{} {} {} {}'.format(len(batch_mask_t), len(batch_mask_v), len(batch_feat_t), len(batch_feat_v)))
+    # logger.info('{} {} {} {}'.format(len(batch_mask_t), len(batch_mask_v), len(batch_feat_t), len(batch_feat_v)))
 
     # ----------------------------------
     # 2. calculate the similarity
@@ -520,7 +555,7 @@ def t2v_epoch(args, model, test_dataloader, device):
     ids_t_cpu = ids_t.detach().cpu()
     np_ids_t = ids_t_cpu.numpy()
 
-    text_id_video_paths_dict = OrderedDict()
+    default_tv_dict = OrderedDict()
     for i in range(0, 1000):
         row_of_i = np.where(np_ids_t == i)[0][0]
         array = minus_sim_matrix[row_of_i]
@@ -538,26 +573,78 @@ def t2v_epoch(args, model, test_dataloader, device):
             video_id_list.append(video_id)
             video_path_list.append(video_dict[video_id])
         dict_of_t_id = {'text': sentence_dict[str(i)][1][0], 'video': video_dict[sentence_dict[str(i)][0]], 'video_path_list' : video_path_list}
-        text_id_video_paths_dict[str(i)] = dict_of_t_id
-    breakpoint()
-    with open('/home/hjlee/workspace/Github/DRL/output/t2v_output.json', 'w') as f:
-        json.dump(text_id_video_paths_dict, f)
-    f.close()
-    breakpoint()
-
-    logger.info('[start] compute_metrics')
-    logger.info("sim matrix size: {}, {}".format(sim_matrix.shape[0], sim_matrix.shape[1]))
-    tv_metrics = compute_metrics(sim_matrix)
+        default_tv_dict[str(i)] = dict_of_t_id
     
-    logger.info('\t Length-T: {}, Length-V:{}'.format(len(sim_matrix), len(sim_matrix[0])))
-    logger.info('[end] compute_metrics')
+    use_save = False
+    if use_save:
+        with open('output/default_t2v_output.json', 'w') as f:
+            json.dump(default_tv_dict, f)
+        f.close()
 
+    for _ in range(n_test_loop):
+        #### test code ########################################################################
+        input_type = input('Enter a type (t for text, i for idx) :') # not t, i -> breakpoint()
+        if input_type == 't':
+            
+            print('Enter a sentence: ')
+            text_input = sys.stdin.readline().strip()
 
-    logger.info("Text-to-Video: R@1: {:.1f} - R@5: {:.1f} - R@10: {:.1f} - Median R: {:.1f} - Mean R: {:.1f}".
-                format(tv_metrics['R1'], tv_metrics['R5'], tv_metrics['R10'], tv_metrics['MR'], tv_metrics['MeanR']))
+            # ----------------------------
+            # 1. cache the features
+            # ----------------------------
+            custom_batch_mask_t, custom_batch_feat_t = [], []
+            custom_text_mask, custom_text_feat = return_text_mask_feat(model, args, text_input)
+            custom_batch_mask_t.append(custom_text_mask)
+            custom_batch_feat_t.append(custom_text_feat)
+            custom_batch_mask_t = allgather(torch.cat(custom_batch_mask_t, dim=0), args)
+            custom_batch_feat_t = allgather(torch.cat(custom_batch_feat_t, dim=0), args)
+            custom_batch_mask_t = custom_batch_mask_t.clone()
+            custom_batch_feat_t = custom_batch_feat_t.clone()
 
+            # ----------------------------------
+            # 2. calculate the similarity
+            # ----------------------------------
 
-    return tv_metrics['R1']
+            logger.info('[start] calculate the similarity')
+            with torch.no_grad():
+                custom_sim_matrix = _run_on_single_gpu(model, custom_batch_mask_t, batch_mask_v, custom_batch_feat_t, batch_feat_v)
+                custom_sim_matrix = np.concatenate(tuple(custom_sim_matrix), axis=0)
+            logger.info('[end] calculate the similarity')
+
+            array = -custom_sim_matrix[0]
+            tmp = array.argsort()
+            ranks = np.zeros(1000)
+            ranks[tmp] = np.arange(len(array))
+
+            custom_idx_list = []
+            for j in range(0, 1000) :
+                custom_idx_list.append(np.where(ranks == j)[0].item())
+
+            custom_video_path_list, custom_video_id_list = [], []
+            for idx in custom_idx_list:
+                video_id = sentence_dict[str(idx)][0]
+                custom_video_id_list.append(video_id)
+                custom_video_path_list.append(video_dict[video_id])
+            custom_tv_dict = {'text': text_input, 'video': None, 'video_path_list' : custom_video_path_list}
+
+            print('input text:', custom_tv_dict['text'])
+            for i in range(top_k):
+                print(custom_tv_dict['video_path_list'][i])
+
+        elif input_type =='i':
+            print('Enter a index number from 0 to 999: ')
+            idx = int(input())
+            index_tv_dict =  default_tv_dict[str(idx)]
+
+            print('input text:', index_tv_dict['text'])
+            for i in range(top_k):
+                print(index_tv_dict['video_path_list'][i])
+        else:
+            breakpoint()
+            return 0
+        #### test code ########################################################################
+
+    
 
 def main():
     global logger
@@ -576,7 +663,10 @@ def main():
     # train and eval
     ## ####################################
     if args.do_t2v:
-        t2v_epoch(args, model, test_dataloader, args.device)
+        top_k = 5
+        n_test_loop = 100
+        t2v_epoch(args, model, test_dataloader, args.device, top_k, n_test_loop)
+
     elif args.do_train:
         tic = time.time()
         max_steps = len(train_dataloader) * args.epochs
