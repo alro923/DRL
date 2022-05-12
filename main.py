@@ -459,11 +459,11 @@ def eval_epoch(args, model, test_dataloader, device):
             batch_feat_v = batch_feat_v[:ids_t.max() + 1, ...]
             logger.info('[finish] extract text+video feature')
 
-    torch.save(ids_t, '/home/hjlee/workspace/Github/DRL/output/t2v/ids_t.pt')
-    torch.save(batch_mask_t, '/home/hjlee/workspace/Github/DRL/output/t2v/batch_mask_t.pt')
-    torch.save(batch_mask_v, '/home/hjlee/workspace/Github/DRL/output/t2v/batch_mask_v.pt')
-    torch.save(batch_feat_t, '/home/hjlee/workspace/Github/DRL/output/t2v/batch_feat_t.pt')
-    torch.save(batch_feat_v, '/home/hjlee/workspace/Github/DRL/output/t2v/batch_feat_v.pt')
+    torch.save(ids_t, 'output/t2v/ids_t.pt')
+    torch.save(batch_mask_t, 'output/t2v/batch_mask_t.pt')
+    torch.save(batch_mask_v, 'output/t2v/batch_mask_v.pt')
+    torch.save(batch_feat_t, 'output/t2v/batch_feat_t.pt')
+    torch.save(batch_feat_v, 'output/t2v/batch_feat_v.pt')
 
     toc1 = time.time()
 
