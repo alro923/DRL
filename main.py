@@ -258,6 +258,11 @@ def return_text_mask_feat(model, args, text_input):
     text_feat = model.get_text_feat(text, text_mask)
     return text_mask, text_feat
 
+def save_output_to_json(dict_to_save, path_to_save):
+    with open(path_to_save, 'w') as f:
+        json.dump(dict_to_save, f)
+    f.close()
+
 def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, scheduler, global_step, max_steps):
     global logger
     torch.cuda.empty_cache()
@@ -341,16 +346,15 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
 
 def _run_on_single_gpu(model, t_mask_list, v_mask_list, t_feat_list, v_feat_list, mini_batch=32):
     sim_matrix = []
-    logger.info('[start] map to main gpu')
+    # logger.info('[start] map to main gpu')
     batch_t_mask = torch.split(t_mask_list, mini_batch)
     batch_v_mask = torch.split(v_mask_list, mini_batch)
     batch_t_feat = torch.split(t_feat_list, mini_batch)
     batch_v_feat = torch.split(v_feat_list, mini_batch)
 
-    logger.info('[finish] map to main gpu')
+    # logger.info('[finish] map to main gpu')
     with torch.no_grad():
         for idx1, (t_mask, t_feat) in enumerate(zip(batch_t_mask, batch_t_feat)):
-            # logger.info('batch_list_t [{}] / [{}]'.format(idx1, len(batch_list_t)))
             each_row = []
             for idx2, (v_mask, v_feat) in enumerate(zip(batch_v_mask, batch_v_feat)):
                 b1b2_logits, *_tmp = model.get_similarity_logits(t_feat, v_feat, t_mask, v_mask)
@@ -452,7 +456,7 @@ def eval_epoch(args, model, test_dataloader, device):
             batch_mask_t[ids_t] = batch_mask_t.clone()
             batch_mask_v[ids_t] = batch_mask_v.clone()
             batch_feat_t[ids_t] = batch_feat_t.clone()
-            batch_feat_v[ids_t] = batch_feat_v.clone()
+            batch_feat_v[ids_t] = batch_feat_v.clone() # 아 여기서 아이디로 집어 넣어놨네...
             batch_mask_t = batch_mask_t[:ids_t.max() + 1, ...]
             batch_mask_v = batch_mask_v[:ids_t.max() + 1, ...]
             batch_feat_t = batch_feat_t[:ids_t.max() + 1, ...]
@@ -525,6 +529,7 @@ def t2v_epoch(args, model, test_dataloader, device, top_k, n_test_loop):
     batch_mask_t, batch_mask_v, batch_feat_t, batch_feat_v, ids_t, ids_v = [], [], [], [], [], []
 
     # if model or testdataloader change, torch.load part should be changed too.
+    # you should run eval_epoch (do_eval = 1) in order to get right files
     batch_mask_t = torch.load('output/t2v/batch_mask_t.pt')
     batch_mask_v = torch.load('output/t2v/batch_mask_v.pt')
     batch_feat_t = torch.load('output/t2v/batch_feat_t.pt')
@@ -539,54 +544,43 @@ def t2v_epoch(args, model, test_dataloader, device, top_k, n_test_loop):
         video_dict = json.load(f)
     f.close()
 
-    # logger.info('{} {} {} {}'.format(len(batch_mask_t), len(batch_mask_v), len(batch_feat_t), len(batch_feat_v)))
-
     # ----------------------------------
     # 2. calculate the similarity
     # ----------------------------------
-    logger.info('[start] calculate the similarity')
     with torch.no_grad():
         sim_matrix = _run_on_single_gpu(model, batch_mask_t, batch_mask_v, batch_feat_t, batch_feat_v)
         sim_matrix = np.concatenate(tuple(sim_matrix), axis=0)
-    logger.info('[end] calculate the similarity')
     
     minus_sim_matrix = -sim_matrix
     
-    ids_t_cpu = ids_t.detach().cpu()
-    np_ids_t = ids_t_cpu.numpy()
 
     default_tv_dict = OrderedDict()
     for i in range(0, 1000):
-        row_of_i = np.where(np_ids_t == i)[0][0]
-        array = minus_sim_matrix[row_of_i]
+        array = minus_sim_matrix[i]
         tmp = array.argsort()
         ranks = np.zeros(1000)
         ranks[tmp] = np.arange(len(array))
-        # index of zero to 999
+
         idx_list = []
         for j in range(0, 1000) :
             idx_list.append(np.where(ranks==j)[0][0])
         video_path_list = []
         video_id_list = []
         for idx in idx_list:
-            video_id = sentence_dict[str(ids_t[idx].item())][0]
+            video_id = sentence_dict[str(idx)][0]
             video_id_list.append(video_id)
             video_path_list.append(video_dict[video_id])
         dict_of_t_id = {'text': sentence_dict[str(i)][1][0], 'video': video_dict[sentence_dict[str(i)][0]], 'video_path_list' : video_path_list}
         default_tv_dict[str(i)] = dict_of_t_id
     
-    use_save = False
-    if use_save:
-        with open('output/default_t2v_output.json', 'w') as f:
-            json.dump(default_tv_dict, f)
-        f.close()
+    # save_output_to_json(default_tv_dict, 'output/default_tv_dict.json')
 
     for _ in range(n_test_loop):
         #### test code ########################################################################
-        input_type = input('Enter a type (t for text, i for idx) :') # not t, i -> breakpoint()
+        input_type = input('Enter a type of a query [t (text), i (index), q (quit)]: ')
+
         if input_type == 't':
-            
-            print('Enter a sentence: ')
+            print('Enter a sentence: ', end = '')
             text_input = sys.stdin.readline().strip()
 
             # ----------------------------
@@ -604,13 +598,13 @@ def t2v_epoch(args, model, test_dataloader, device, top_k, n_test_loop):
             # ----------------------------------
             # 2. calculate the similarity
             # ----------------------------------
-
-            logger.info('[start] calculate the similarity')
             with torch.no_grad():
                 custom_sim_matrix = _run_on_single_gpu(model, custom_batch_mask_t, batch_mask_v, custom_batch_feat_t, batch_feat_v)
                 custom_sim_matrix = np.concatenate(tuple(custom_sim_matrix), axis=0)
-            logger.info('[end] calculate the similarity')
 
+            # --------------------------------------
+            # 3. rank videos in order of similarity
+            # --------------------------------------
             array = -custom_sim_matrix[0]
             tmp = array.argsort()
             ranks = np.zeros(1000)
@@ -620,28 +614,44 @@ def t2v_epoch(args, model, test_dataloader, device, top_k, n_test_loop):
             for j in range(0, 1000) :
                 custom_idx_list.append(np.where(ranks == j)[0].item())
 
-            custom_video_path_list, custom_video_id_list = [], []
+            custom_video_id_list, custom_video_path_list = [], []
             for idx in custom_idx_list:
                 video_id = sentence_dict[str(idx)][0]
                 custom_video_id_list.append(video_id)
                 custom_video_path_list.append(video_dict[video_id])
+
             custom_tv_dict = {'text': text_input, 'video': None, 'video_path_list' : custom_video_path_list}
 
-            print('input text:', custom_tv_dict['text'])
+            # -------------------------------------
+            # 4. show T2V results
+            # -------------------------------------
+            logger.info("input text query: {}".format(custom_tv_dict['text']))
+            logger.info("T2V top {} results:".format(top_k))
             for i in range(top_k):
                 print(custom_tv_dict['video_path_list'][i])
 
         elif input_type =='i':
-            print('Enter a index number from 0 to 999: ')
+            print('Enter a index number (0 ~ 999): ', end ='')
+
+            # -------------------------------------
+            # 1 ~ 3. already done
+            # -------------------------------------
             idx = int(input())
             index_tv_dict =  default_tv_dict[str(idx)]
 
-            print('input text:', index_tv_dict['text'])
+            # -------------------------------------
+            # 4. show T2V results
+            # -------------------------------------
+            logger.info("input text query: {}".format(index_tv_dict['text']))
+            logger.info("T2V top {} results:".format(top_k))
             for i in range(top_k):
                 print(index_tv_dict['video_path_list'][i])
+
+        elif input_type == 'q':
+            return
+
         else:
-            breakpoint()
-            return 0
+            print('not t or i, try again!')
         #### test code ########################################################################
 
     
