@@ -2,7 +2,7 @@
 [![MSR-VTT](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/disentangled-representation-learning-for-text/video-retrieval-on-msr-vtt-1ka)](https://paperswithcode.com/sota/video-retrieval-on-msr-vtt-1ka?p=disentangled-representation-learning-for-text)
 [![DiDeMo](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/disentangled-representation-learning-for-text/video-retrieval-on-didemo)](https://paperswithcode.com/sota/video-retrieval-on-didemo?p=disentangled-representation-learning-for-text)
 
-This is a forked repo from [a PyTorch implementation](https://github.com/foolwood/DRL)of the paper [Disentangled Representation Learning for Text-Video Retrieval](https://arxiv.org/abs/2203.07111):
+This is a forked repo from [a PyTorch implementation](https://github.com/foolwood/DRL) of the paper [Disentangled Representation Learning for Text-Video Retrieval](https://arxiv.org/abs/2203.07111):
 <p align="center">
   <img src="demo/pipeline.png" width="800">
 </p>
